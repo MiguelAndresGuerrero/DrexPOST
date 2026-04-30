@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DrexPOS - Sistema de Ventas e Inventario</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🛒 DrexPOS</h1>
+            <div class="resumen">
+                <div class="card-resumen">
+                    <span>📦 Productos</span>
+                    <strong id="totalProductos">0</strong>
+                </div>
+                <div class="card-resumen">
+                    <span>⚠️ Stock Bajo</span>
+                    <strong id="stockBajo">0</strong>
+                </div>
+                <div class="card-resumen">
+                    <span>🛒 Ventas Hoy</span>
+                    <strong id="ventasHoy">0</strong>
+                </div>
+                <div class="card-resumen">
+                    <span>💰 Ingreso Hoy</span>
+                    <strong id="ingresoHoy">$0</strong>
+                </div>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-btn active" onclick="mostrarTab('ventas')">🛒 Vender</button>
+            <button class="tab-btn" onclick="mostrarTab('reporte')">📊 Reporte del Día</button>
+            <button class="tab-btn" onclick="mostrarTab('historial')">📅 Historial</button>
+            <button class="tab-btn" onclick="mostrarTab('inventario')">📦 Administrar Productos</button>
+        </div>
+
+        <!-- Panel Vender -->
+        <div id="tabVentas" class="tab-content active">
+            <div class="paneles">
+                <div class="panel">
+                    <h2>📋 Productos</h2>
+                    <div class="buscar">
+                        <input type="text" id="buscarProducto" placeholder="🔍 Buscar por nombre o código..."
+                            autocomplete="off">
+                        <button id="btnAgregarProducto" class="btn-primary">+ Nuevo</button>
+                    </div>
+                    <div class="tabla-container">
+                        <table id="tablaProductos">
+                            <thead>
+                                <tr>
+                                    <th>Código</th>
+                                    <th>Nombre</th>
+                                    <th>Precio</th>
+                                    <th>Stock</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="listaProductos"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>🛒 Carrito de Venta</h2>
+                    <div class="carrito">
+                        <div class="tabla-container">
+                            <table id="tablaCarrito">
+                                <thead>
+                                    <tr>
+                                        <th>Producto</th>
+                                        <th>Cantidad</th>
+                                        <th>Subtotal</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="listaCarrito"></tbody>
+                            </table>
+                        </div>
+                        <div class="total-carrito">
+                            <div class="total-label">Total:</div>
+                            <div class="total-monto">$<span id="totalCarrito">0</span></div>
+                            <button id="btnFinalizarVenta" class="btn-success">✅ Finalizar Venta</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel Reporte del Día -->
+        <div id="tabReporte" class="tab-content">
+            <div class="panel-full">
+                <h2>📊 Ventas del día de hoy</h2>
+                <div class="fecha-actual" id="fechaActual"></div>
+
+                <div class="resumen-dia">
+                    <div class="card-dia"><span>💰 Total vendido hoy</span><strong id="totalDia">$0</strong></div>
+                    <div class="card-dia"><span>📦 Productos vendidos</span><strong id="productosVendidosDia">0</strong>
+                    </div>
+                    <div class="card-dia"><span>🛒 Número de ventas</span><strong id="numVentasDia">0</strong></div>
+                </div>
+
+                <div style="text-align: center; margin: 20px 0;">
+                    <button id="btnReporteCompleto" class="btn-success"
+                        style="background: #667eea; padding: 12px 30px;">🧾 Generar Reporte Completo</button>
+                </div>
+
+                <h3>📋 Productos vendidos hoy</h3>
+                <div class="tabla-container">
+                    <table id="tablaProductosVendidos">
+                        <thead>
+                            <tr>
+                                <th>Producto</th>
+                                <th>Cantidad</th>
+                                <th>Total</th>
+                            </tr>
+                        </thead>
+                        <tbody id="listaProductosVendidos"></tbody>
+                    </table>
+                </div>
+
+                <h3>📄 Historial de ventas del día</h3>
+                <div class="tabla-container">
+                    <table id="tablaVentasDia">
+                        <thead>
+                            <tr>
+                                <th>ID Venta</th>
+                                <th>Factura #</th>
+                                <th>Hora</th>
+                                <th>Total</th>
+                                <th>Detalle</th>
+                                <th>Factura</th>
+                            </tr>
+                        </thead>
+                        <tbody id="listaVentasDia"></tbody>
+                    </table>
+                </div>
+
+                <h3>📋 Detalle completo de productos vendidos</h3>
+                <div class="tabla-container">
+                    <table id="tablaDetalleCompleto">
+                        <thead>
+                            <tr>
+                                <th>Venta ID</th>
+                                <th>Factura #</th>
+                                <th>Fecha y Hora</th>
+                                <th>Producto</th>
+                                <th>Cantidad</th>
+                                <th>Subtotal</th>
+                            </tr>
+                        </thead>
+                        <tbody id="listaDetalleCompleto"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel Historial -->
+        <div id="tabHistorial" class="tab-content">
+            <div class="panel-full">
+                <h2>📅 Historial de Ventas</h2>
+                <div class="filtros-historial">
+                    <div class="filtro-grupo">
+                        <label>📆 Desde:</label>
+                        <input type="date" id="fechaDesde">
+                    </div>
+                    <div class="filtro-grupo">
+                        <label>📆 Hasta:</label>
+                        <input type="date" id="fechaHasta">
+                    </div>
+                    <button id="btnBuscarHistorial" class="btn-primary">🔍 Buscar</button>
+                    <button id="btnLimpiarHistorial" class="btn-secondary">🗑️ Limpiar</button>
+                </div>
+
+                <div id="contenedorHistorial">
+                    <div class="loading">Seleccione un rango de fechas para buscar ventas...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel Inventario -->
+        <div id="tabInventario" class="tab-content">
+            <div class="panel-full">
+                <h2>📦 Administrar Productos</h2>
+                <div class="buscar">
+                    <input type="text" id="buscarInventario" placeholder="🔍 Buscar por nombre o código..."
+                        autocomplete="off">
+                    <button id="btnAgregarProductoInventario" class="btn-primary">+ Nuevo Producto</button>
+                </div>
+                <div class="tabla-container">
+                    <table id="tablaInventario">
+                        <thead>
+                            <tr>
+                                <th>Código</th>
+                                <th>Nombre</th>
+                                <th>Precio</th>
+                                <th>Stock</th>
+                                <th>Estado</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="listaInventario"></tbody>
+                    </table>
+                </div>
+                <div class="info-inventario">
+                    <small>💡 Consejos:</small><br>
+                    <small>• Haz clic en el stock para modificarlo directamente</small><br>
+                    <small>• Los productos "Inactivos" no aparecen en ventas</small><br>
+                    <small>• Puedes reactivar un producto en cualquier momento</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal para producto -->
+        <div id="modalProducto" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h3 id="modalTitulo">Agregar Producto</h3>
+                <input type="hidden" id="productoId">
+                <input type="text" id="productoCodigo" placeholder="Código de barras (opcional)">
+                <input type="text" id="productoNombre" placeholder="Nombre del producto">
+                <input type="number" id="productoPrecio" placeholder="Precio" step="0.01">
+                <input type="number" id="productoStock" placeholder="Stock inicial">
+                <button id="btnGuardarProducto" class="btn-primary">Guardar</button>
+            </div>
+        </div>
+
+        <!-- Modal para detalle de venta -->
+        <div id="modalDetalleVenta" class="modal">
+            <div class="modal-content modal-detalle">
+                <span class="close-detalle">&times;</span>
+                <h3>📄 Detalle de Venta #<span id="detalleVentaId"></span></h3>
+                <p><strong>Factura N°:</strong> <span id="detalleFacturaNumero"></span></p>
+                <p><strong>Fecha:</strong> <span id="detalleFecha"></span></p>
+                <p><strong>Total:</strong> $<span id="detalleTotal"></span></p>
+                <h4>Productos:</h4>
+                <div class="tabla-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Producto</th>
+                                <th>Código</th>
+                                <th>Cantidad</th>
+                                <th>Subtotal</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detalleItems"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,18 @@
+# Dependencias
+node_modules/
+package-lock.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Base de datos local
+*.sqlite
+*.db
+
+# Variables de entorno
+.env

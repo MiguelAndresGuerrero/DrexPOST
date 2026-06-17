@@ -1,7 +1,487 @@
 const API = 'http://localhost:3000/api';
 let carrito = [];
 let productosOriginales = [];
+let usuariosOriginales = [];
 let busquedaTimeout;
+let currentUser = null;
+
+function getAuthToken() {
+    return localStorage.getItem('drexpos_token');
+}
+
+function setAuthToken(token) {
+    localStorage.setItem('drexpos_token', token);
+}
+
+function removeAuthToken() {
+    localStorage.removeItem('drexpos_token');
+}
+
+function apiFetch(path, options = {}) {
+    const headers = Object.assign({}, options.headers || {});
+    const token = getAuthToken();
+    if (token) {
+        headers.Authorization = `Bearer ${token}`;
+    }
+    return fetch(`${API}${path}`, Object.assign({}, options, { headers }));
+}
+
+async function apiJson(path, options = {}) {
+    const res = await apiFetch(path, options);
+    if (res.status === 401) {
+        cerrarSesion(true);
+        throw new Error('No autorizado');
+    }
+    return res;
+}
+
+function mostrarLogin(mensaje = '') {
+    const overlay = document.getElementById('loginOverlay');
+    const card = overlay.querySelector('.login-card');
+    overlay.classList.remove('hidden');
+    // small entrance animation
+    card.style.transform = 'translateY(-6px) scale(0.99)';
+    card.style.opacity = '0';
+    document.getElementById('userBar').classList.add('hidden');
+    document.querySelectorAll('.container, .tabs, .tab-content').forEach(el => el?.classList?.add('blurred'));
+    document.getElementById('loginError').textContent = mensaje;
+    setTimeout(() => {
+        card.style.transition = 'transform 220ms ease, opacity 220ms ease';
+        card.style.transform = 'translateY(0) scale(1)';
+        card.style.opacity = '1';
+        const input = document.getElementById('loginUsuario');
+        if (input) input.focus();
+    }, 30);
+}
+
+function ocultarLogin() {
+    const overlay = document.getElementById('loginOverlay');
+    const card = overlay.querySelector('.login-card');
+    // reverse animation
+    if (card) {
+        card.style.transform = 'translateY(-6px) scale(0.99)';
+        card.style.opacity = '0';
+        setTimeout(() => {
+            overlay.classList.add('hidden');
+        }, 220);
+    } else {
+        overlay.classList.add('hidden');
+    }
+    document.querySelectorAll('.container, .tabs, .tab-content').forEach(el => el?.classList?.remove('blurred'));
+}
+
+function cerrarSesion(ignoreLogin = false) {
+    removeAuthToken();
+    currentUser = null;
+    document.getElementById('userBar').classList.add('hidden');
+    document.getElementById('adminPanel').classList.add('hidden');
+    const adminTabButton = document.getElementById('btnTabAdmin');
+    if (adminTabButton) adminTabButton.classList.add('hidden');
+    const tablaUsuariosBody = document.querySelector('#tablaUsuarios tbody');
+    if (tablaUsuariosBody) tablaUsuariosBody.innerHTML = '';
+    if (!ignoreLogin) mostrarLogin('Sesión cerrada. Ingrese de nuevo.');
+}
+
+async function validarSesion() {
+    const token = getAuthToken();
+    if (!token) {
+        mostrarLogin();
+        return;
+    }
+
+    try {
+        const res = await apiFetch('/session');
+        const data = await res.json();
+        if (!res.ok) {
+            if (res.status === 403 && data.error === 'Usuario bloqueado') {
+                mostrarModalBloqueado(data.bloqueo_razon || 'Razón no especificada');
+            }
+            throw new Error('Sesión expirada');
+        }
+        currentUser = data;
+        document.getElementById('usernameLabel').textContent = `${currentUser.username} (${currentUser.rol})`;
+        document.getElementById('userBar').classList.remove('hidden');
+        // Mostrar panel admin sólo si es administrador o si el usuario protegido 'Andres' está logueado
+        const isProtectedAndres = currentUser.username && currentUser.username.toLowerCase() === 'andres';
+        const esAdmin = currentUser.rol === 'admin' || isProtectedAndres;
+        const adminTabButton = document.getElementById('btnTabAdmin');
+        if (adminTabButton) {
+            if (esAdmin) adminTabButton.classList.remove('hidden');
+            else adminTabButton.classList.add('hidden');
+        }
+        if (esAdmin) {
+            document.getElementById('adminPanel').classList.remove('hidden');
+            cargarUsuarios();
+            cargarSesiones();
+            actualizarEstadoPrograma();
+            actualizarFiltroUsuarioVenta();
+        } else {
+            document.getElementById('adminPanel').classList.add('hidden');
+            actualizarFiltroUsuarioVenta();
+        }
+        ocultarLogin();
+        cargarCarritoGuardado();
+        cargarProductos();
+        cargarResumen();
+    } catch (e) {
+        cerrarSesion(true);
+        mostrarLogin('Inicie sesión para continuar.');
+        console.error('Validar sesión:', e);
+    }
+}
+
+async function iniciarSesion() {
+    const username = document.getElementById('loginUsuario').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (!username || !password) {
+        document.getElementById('loginError').textContent = 'Ingrese usuario y contraseña';
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            if (res.status === 403 && data.error === 'Usuario bloqueado') {
+                mostrarModalBloqueado(data.bloqueo_razon || 'Razón no especificada');
+                document.getElementById('loginError').textContent = '';
+                return;
+            }
+            document.getElementById('loginError').textContent = data.error || 'Error de autenticación';
+            return;
+        }
+        setAuthToken(data.token);
+        await validarSesion();
+    } catch (e) {
+        document.getElementById('loginError').textContent = 'Error de conexión';
+        console.error('Login:', e);
+    }
+}
+
+async function cargarUsuarios() {
+    if (!currentUser || currentUser.rol !== 'admin') return;
+    try {
+        const res = await apiFetch('/usuarios');
+        if (!res.ok) throw new Error('Error cargando usuarios');
+        const usuarios = await res.json();
+        usuariosOriginales = usuarios;
+        renderizarUsuarios(usuarios);
+        renderizarFiltroUsuariosVenta(usuarios);
+    } catch (e) {
+        console.error('Error cargando usuarios:', e);
+    }
+}
+
+function renderizarUsuarios(usuarios) {
+    const tbody = document.querySelector('#tablaUsuarios tbody');
+    tbody.innerHTML = '';
+    usuarios.forEach(u => {
+        const row = tbody.insertRow();
+        row.insertCell(0).textContent = u.username;
+        row.insertCell(1).textContent = u.rol;
+        const estado = row.insertCell(2);
+        if (u.bloqueado) {
+            estado.textContent = 'Bloqueado' + (u.bloqueo_razon ? ` — razón: ${u.bloqueo_razon}` : '');
+            estado.style.color = '#dc2626';
+        } else {
+            estado.textContent = 'Activo';
+            estado.style.color = '#16a34a';
+        }
+        const acciones = row.insertCell(3);
+
+        // If this user is an admin and not the current admin, disable the block/unblock button
+        const isOtherAdmin = (u.rol === 'admin' && currentUser && u.id !== currentUser.id);
+        // Also protect the specific username 'Andres' from being modified by others
+        const isProtectedUser = (u.username && currentUser && u.username.toLowerCase() === 'andres' && u.id !== currentUser.id);
+
+        const button = document.createElement('button');
+        button.className = u.bloqueado ? 'btn-primary btn-sm' : 'btn-danger btn-sm';
+        button.textContent = u.bloqueado ? 'Desbloquear' : 'Bloquear';
+        if (isOtherAdmin || isProtectedUser) {
+            button.disabled = true;
+            button.title = isProtectedUser ? 'No puede modificar al usuario protegido' : 'No puede modificar a otro administrador';
+            button.style.opacity = '0.6';
+            button.onclick = () => { };
+        } else {
+            button.onclick = () => toggleBloqueoUsuario(u.id, !u.bloqueado);
+        }
+        acciones.appendChild(button);
+    });
+}
+
+function renderizarFiltroUsuariosVenta(usuarios) {
+    const select = document.getElementById('filtroUsuarioVenta');
+    if (!select) return;
+
+    select.innerHTML = '<option value="">-- Seleccione usuario --</option>';
+    usuarios
+        .filter(u => u.rol === 'cliente' || u.rol === 'user')
+        .forEach(u => {
+            const option = document.createElement('option');
+            option.value = u.id;
+            option.textContent = `${u.username} ${u.bloqueado ? '— SIN PAGAR' : ''}`;
+            select.appendChild(option);
+        });
+
+    select.onchange = () => {
+        const selectedId = select.value;
+        const panelDetalles = document.getElementById('panelDetallesUsuario');
+
+        if (!selectedId) {
+            if (panelDetalles) panelDetalles.style.display = 'none';
+            return;
+        }
+
+        const user = usuarios.find(u => u.id.toString() === selectedId);
+        if (!user) {
+            if (panelDetalles) panelDetalles.style.display = 'none';
+            return;
+        }
+
+        // Mostrar datos del usuario
+        mostrarDetallesUsuario(user);
+    };
+}
+
+function mostrarDetallesUsuario(usuario) {
+    const panel = document.getElementById('panelDetallesUsuario');
+    if (!panel) return;
+
+    document.getElementById('usuarioDatosNombre').textContent = usuario.username;
+    document.getElementById('usuarioDatosRol').textContent = usuario.rol.toUpperCase();
+    document.getElementById('usuarioDatosEstado').textContent = usuario.bloqueado ? '❌ BLOQUEADO' : '✅ ACTIVO';
+    document.getElementById('usuarioDatosPago').textContent = usuario.bloqueado ? '❌ SIN PAGAR' : '✅ AL DÍA';
+    document.getElementById('usuarioDatosPago').style.color = usuario.bloqueado ? '#dc2626' : '#16a34a';
+
+    // Fecha creación
+    const fechaCreada = new Date(usuario.creado);
+    document.getElementById('usuarioDatosCreado').textContent = fechaCreada.toLocaleDateString('es-CO');
+
+    // Mostrar/ocultar razón de bloqueo
+    const panelRazon = document.getElementById('usuarioDatosRazonBloqueo');
+    if (usuario.bloqueado && usuario.bloqueo_razon) {
+        document.getElementById('textoRazonBloqueo').textContent = usuario.bloqueo_razon;
+        panelRazon.style.display = 'block';
+    } else {
+        panelRazon.style.display = 'none';
+    }
+
+    panel.style.display = 'block';
+}
+
+function actualizarFiltroUsuarioVenta() {
+    const panelProductos = document.getElementById('panelProductosAdmin');
+    const panelFiltro = document.getElementById('panelFiltroUsuarioAdmin');
+
+    if (!panelProductos || !panelFiltro) return;
+
+    if (currentUser && currentUser.rol === 'admin') {
+        panelProductos.classList.remove('hidden');
+        panelFiltro.classList.remove('hidden');
+    } else {
+        panelProductos.classList.add('hidden');
+        panelFiltro.classList.add('hidden');
+    }
+}
+
+async function toggleBloqueoUsuario(id, bloquear) {
+    try {
+        let options = { method: 'PUT' };
+        if (bloquear) {
+            const razon = prompt('Motivo de bloqueo (opcional):', 'Debe regularizar pago');
+            options = {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ razon })
+            };
+        }
+        const res = await apiFetch(`/usuarios/${id}/${bloquear ? 'block' : 'unblock'}`, options);
+        if (!res.ok) {
+            const error = await res.json();
+            alert(`Error: ${error.error}`);
+            return;
+        }
+        // If the current admin blocked themself, close the session immediately
+        if (currentUser && id === currentUser.id && bloquear) {
+            alert('Has bloqueado tu cuenta. Se cerrará la sesión.');
+            // refresh UI after a short delay to let backend delete sessions
+            setTimeout(() => {
+                cerrarSesion();
+            }, 200);
+            return;
+        }
+        cargarUsuarios();
+        cargarSesiones();
+    } catch (e) {
+        alert('Error de conexión');
+        console.error(e);
+    }
+}
+
+// ========== SESIONES ACTIVAS (ADMIN) ==========
+async function cargarSesiones() {
+    try {
+        const res = await apiFetch('/sesiones');
+        if (!res.ok) throw new Error('Error cargando sesiones');
+        const sesiones = await res.json();
+        renderizarSesiones(sesiones);
+    } catch (e) {
+        console.error('Error cargando sesiones:', e);
+    }
+}
+
+function renderizarSesiones(sesiones) {
+    const tbody = document.getElementById('listaSesiones');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    sesiones.forEach(s => {
+        const row = tbody.insertRow();
+        row.insertCell(0).textContent = s.username;
+        const fecha = new Date(s.creado);
+        row.insertCell(1).textContent = fecha.toLocaleString();
+        const estadoCell = row.insertCell(2);
+        estadoCell.textContent = s.bloqueado ? 'Bloqueado' : 'Activo';
+        estadoCell.style.color = s.bloqueado ? '#dc2626' : '#16a34a';
+        const acciones = row.insertCell(3);
+
+        const btnForce = document.createElement('button');
+        btnForce.className = 'btn-secondary btn-sm';
+        btnForce.textContent = 'Forzar cierre';
+        btnForce.onclick = () => forzarCierreSesion(s.session_id);
+        acciones.appendChild(btnForce);
+
+        const btnBlock = document.createElement('button');
+        btnBlock.className = s.bloqueado ? 'btn-primary btn-sm' : 'btn-danger btn-sm';
+        btnBlock.style.marginLeft = '8px';
+        btnBlock.textContent = s.bloqueado ? 'Desbloquear' : 'Bloquear';
+        btnBlock.onclick = () => toggleBloqueoUsuario(s.usuario_id, !s.bloqueado);
+        acciones.appendChild(btnBlock);
+    });
+}
+
+async function forzarCierreSesion(sessionId) {
+    if (!confirm('¿Forzar cierre de sesión de este usuario?')) return;
+    try {
+        const res = await apiFetch(`/sesiones/${sessionId}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const error = await res.json();
+            alert(error.error || 'Error forzando cierre');
+            return;
+        }
+        cargarSesiones();
+    } catch (e) {
+        console.error('Error forzando cierre de sesión:', e);
+        alert('Error de conexión');
+    }
+}
+
+function abrirModalUsuario(defaultRole = 'cliente') {
+    if (defaultRole && defaultRole instanceof Event) {
+        defaultRole = 'cliente';
+    }
+    document.getElementById('usuarioNuevoNombre').value = '';
+    document.getElementById('usuarioNuevoPassword').value = '';
+    document.getElementById('usuarioNuevoRol').value = defaultRole;
+    document.getElementById('modalUsuarioTitulo').textContent = defaultRole === 'admin' ? 'Registrar administrador' : 'Registrar cliente';
+    const modal = document.getElementById('modalUsuario');
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+}
+
+function cerrarModalUsuario() {
+    const modal = document.getElementById('modalUsuario');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+}
+
+function mostrarModalBloqueado(razon) {
+    const modal = document.getElementById('modalBloqueado');
+    const mensaje = document.getElementById('mensajeBloqueo');
+    const overlay = document.getElementById('loginOverlay');
+    if (overlay) {
+        overlay.style.zIndex = '10000';
+    }
+    document.querySelectorAll('.container, .tabs, .tab-content').forEach(el => el?.classList?.remove('blurred'));
+    mensaje.textContent = `Tu cuenta ha sido bloqueada. Razón: ${razon}. Por favor contacta al administrador para activar tu producto.`;
+    modal.style.display = 'flex';
+    modal.style.zIndex = '20000';
+}
+
+function cerrarModalBloqueado() {
+    const modal = document.getElementById('modalBloqueado');
+    modal.style.display = 'none';
+    document.querySelectorAll('.container, .tabs, .tab-content').forEach(el => el?.classList?.add('blurred'));
+}
+
+async function guardarUsuario() {
+    const username = document.getElementById('usuarioNuevoNombre').value.trim();
+    const password = document.getElementById('usuarioNuevoPassword').value;
+    const rol = document.getElementById('usuarioNuevoRol').value;
+    if (!username || !password) {
+        alert('Ingrese usuario y contraseña');
+        return;
+    }
+    try {
+        const res = await apiFetch('/usuarios', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, rol })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(data.error || 'Error creando usuario');
+            return;
+        }
+        cerrarModalUsuario();
+        cargarUsuarios();
+    } catch (e) {
+        alert('Error de conexión');
+        console.error(e);
+    }
+}
+
+async function actualizarEstadoPrograma() {
+    try {
+        const res = await apiFetch('/program/status');
+        if (!res.ok) throw new Error('Error al cargar estado de programa');
+        const data = await res.json();
+        const btn = document.getElementById('btnTogglePrograma');
+        if (data.habilitado) {
+            btn.textContent = 'Bloquear programa';
+            btn.className = 'btn-danger btn-sm';
+        } else {
+            btn.textContent = 'Desbloquear programa';
+            btn.className = 'btn-success btn-sm';
+        }
+    } catch (e) {
+        console.error('Error cargando estado de programa:', e);
+    }
+}
+
+async function togglePrograma() {
+    try {
+        const estadoRes = await apiFetch('/program/status');
+        const estado = await estadoRes.json();
+        const res = await apiFetch('/program/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ habilitado: !estado.habilitado })
+        });
+        if (!res.ok) {
+            const error = await res.json();
+            alert(error.error || 'Error cambiando estado');
+            return;
+        }
+        actualizarEstadoPrograma();
+    } catch (e) {
+        alert('Error de conexión');
+        console.error(e);
+    }
+}
 
 // ========== PERSISTENCIA DEL CARRITO ==========
 function guardarCarrito() {
@@ -36,6 +516,7 @@ function mostrarTab(tab) {
         document.getElementById('tabVentas').classList.add('active');
         document.querySelector('.tab-btn:first-child').classList.add('active');
         cargarProductos();
+        actualizarFiltroUsuarioVenta();
     } else if (tab === 'reporte') {
         document.getElementById('tabReporte').classList.add('active');
         document.querySelectorAll('.tab-btn')[1].classList.add('active');
@@ -49,11 +530,25 @@ function mostrarTab(tab) {
         document.getElementById('fechaHasta').value = hoy.toISOString().split('T')[0];
         document.getElementById('fechaDesde').value = hace7Dias.toISOString().split('T')[0];
         buscarHistorial();
-    } else if (tab === 'inventario') {
-        document.getElementById('tabInventario').classList.add('active');
+    } else if (tab === 'admin') {
+        document.getElementById('tabAdmin').classList.add('active');
         document.querySelectorAll('.tab-btn')[3].classList.add('active');
-        cargarInventario();
+        document.getElementById('adminPanel').classList.remove('hidden');
     }
+}
+
+function mostrarNotificacionInventario() {
+    const info = document.getElementById('infoInventario');
+    if (!info) return;
+    info.classList.remove('info-inventario-hidden');
+    info.classList.add('show');
+}
+
+function cerrarNotificacionInventario() {
+    const info = document.getElementById('infoInventario');
+    if (!info) return;
+    info.classList.remove('show');
+    info.classList.add('info-inventario-hidden');
 }
 
 // ========== BUSCAR HISTORIAL ==========
@@ -70,8 +565,8 @@ async function buscarHistorial() {
     contenedor.innerHTML = '<div class="loading">📅 Cargando historial...</div>';
 
     try {
-        const url = `${API}/ventas/por-fecha?fecha_inicio=${fechaDesde}&fecha_fin=${fechaHasta}`;
-        const res = await fetch(url);
+        const url = `/ventas/por-fecha?fecha_inicio=${fechaDesde}&fecha_fin=${fechaHasta}`;
+        const res = await apiFetch(url);
 
         if (!res.ok) throw new Error(`Error HTTP: ${res.status}`);
 
@@ -215,13 +710,13 @@ function limpiarHistorial() {
 // ========== PRODUCTOS ==========
 async function cargarProductos() {
     try {
-        const res = await fetch(`${API}/productos`);
+        const res = await apiFetch('/productos');
         if (!res.ok) throw new Error('Error cargando productos');
         productosOriginales = await res.json();
         renderizarProductos(productosOriginales);
     } catch (e) {
         console.error('Error cargando productos:', e);
-        document.getElementById('listaProductos').innerHTML = '<tr><td colspan="5">Error cargando productos</div>';
+        document.getElementById('listaProductos').innerHTML = '<tr><td colspan="6">Error cargando productos</td></tr>';
     }
 }
 
@@ -230,12 +725,12 @@ function renderizarProductos(productos) {
     const busqueda = document.getElementById('buscarProducto').value.toLowerCase();
     tbody.innerHTML = '';
     if (!busqueda) {
-        tbody.innerHTML = '<tr><td colspan="5">✏️ Empieza a escribir para buscar productos</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6">✏️ Empieza a escribir para buscar productos</td></tr>';
         return;
     }
     const filtrados = productos.filter(p => (p.nombre && p.nombre.toLowerCase().includes(busqueda)) || (p.codigo && p.codigo.toLowerCase().includes(busqueda)));
     if (filtrados.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5">No se encontraron productos</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6">No se encontraron productos</td></tr>';
         return;
     }
     filtrados.forEach(p => {
@@ -244,7 +739,8 @@ function renderizarProductos(productos) {
         row.insertCell(1).textContent = p.nombre;
         row.insertCell(2).textContent = `$${parseFloat(p.precio).toLocaleString('es-CO', { minimumFractionDigits: 2 })}`;
         row.insertCell(3).textContent = p.stock;
-        const acciones = row.insertCell(4);
+        row.insertCell(4).textContent = p.activo === 0 || p.activo === false ? 'No' : 'Sí';
+        const acciones = row.insertCell(5);
         const btnAgregar = document.createElement('button');
         btnAgregar.textContent = '+ Vender';
         btnAgregar.className = 'btn-primary btn-sm';
@@ -266,20 +762,24 @@ document.getElementById('buscarProducto').addEventListener('input', function () 
 
 // ========== INVENTARIO ==========
 async function cargarInventario() {
+    const tbody = document.getElementById('listaInventario');
+    if (!tbody) return;
     try {
-        const res = await fetch(`${API}/productos/todos`);
+        const res = await apiFetch('/productos/todos');
         if (!res.ok) throw new Error('Error cargando inventario');
         const productos = await res.json();
         renderizarInventario(productos);
     } catch (e) {
         console.error('Error cargando inventario:', e);
-        document.getElementById('listaInventario').innerHTML = '<tr><td colspan="6">Error cargando inventario</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6">Error cargando inventario</td></tr>';
     }
 }
 
 function renderizarInventario(productos) {
     const tbody = document.getElementById('listaInventario');
-    const busquedaInv = document.getElementById('buscarInventario').value.toLowerCase();
+    const buscarInv = document.getElementById('buscarInventario');
+    if (!tbody || !buscarInv) return;
+    const busquedaInv = buscarInv.value.toLowerCase();
     let filtrados = busquedaInv ? productos.filter(p => (p.nombre && p.nombre.toLowerCase().includes(busquedaInv)) || (p.codigo && p.codigo.toLowerCase().includes(busquedaInv))) : productos;
     tbody.innerHTML = '';
     if (filtrados.length === 0) { tbody.innerHTML = '<tr><td colspan="6">No hay productos registrados</td></tr>'; return; }
@@ -327,7 +827,7 @@ function renderizarInventario(productos) {
 
 async function actualizarStock(id, nuevoStock) {
     try {
-        const res = await fetch(`${API}/productos/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stock: nuevoStock }) });
+        const res = await apiFetch(`/productos/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stock: nuevoStock }) });
         if (!res.ok) { const error = await res.json(); alert(`Error: ${error.error}`); }
     } catch (e) { console.error('Error actualizando stock:', e); }
 }
@@ -336,14 +836,21 @@ async function toggleProducto(id, activoActual) {
     const nuevoEstado = !activoActual;
     if (confirm(`¿${nuevoEstado ? 'Activar' : 'Desactivar'} este producto? ${!nuevoEstado ? 'No aparecerá en ventas.' : ''}`)) {
         try {
-            const res = await fetch(`${API}/productos/${id}/toggle`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ activo: nuevoEstado }) });
-            if (res.ok) { alert(`✅ Producto ${nuevoEstado ? 'activado' : 'desactivado'}`); cargarInventario(); cargarProductos(); cargarResumen(); }
-            else { const error = await res.json(); alert(`Error: ${error.error}`); }
+            const res = await apiFetch(`/productos/${id}/toggle`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ activo: nuevoEstado }) });
+            if (res.ok) {
+                alert(`✅ Producto ${nuevoEstado ? 'activado' : 'desactivado'}`);
+                if (document.getElementById('listaInventario')) cargarInventario();
+                cargarProductos();
+                cargarResumen();
+            } else { const error = await res.json(); alert(`Error: ${error.error}`); }
         } catch (e) { alert('Error de conexión'); }
     }
 }
 
-document.getElementById('buscarInventario').addEventListener('input', function () { cargarInventario(); });
+const buscarInventarioInput = document.getElementById('buscarInventario');
+if (buscarInventarioInput) {
+    buscarInventarioInput.addEventListener('input', function () { cargarInventario(); });
+}
 
 // ========== CARRITO ==========
 function agregarAlCarrito(producto) {
@@ -402,7 +909,7 @@ async function finalizarVenta() {
     if (carrito.length === 0) { alert('❌ Agrega productos al carrito'); return; }
     const items = carrito.map(item => ({ producto_id: item.id, cantidad: item.cantidad, precio_unitario: item.precio }));
     try {
-        const res = await fetch(`${API}/ventas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
+        const res = await apiFetch('/ventas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
         if (res.ok) {
             const data = await res.json();
             alert(`✅ Venta registrada con éxito\nFactura N°: ${data.factura_numero.toString().padStart(3, '0')}\nTotal: $${parseFloat(data.total).toLocaleString('es-CO', { minimumFractionDigits: 2 })}`);
@@ -416,16 +923,29 @@ async function finalizarVenta() {
 }
 
 // ========== DASHBOARD ==========
+function setTextSafe(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
 async function cargarResumen() {
     try {
-        const res = await fetch(`${API}/dashboard/resumen`);
+        const res = await apiFetch('/dashboard/resumen');
         if (!res.ok) throw new Error('Error cargando resumen');
         const data = await res.json();
-        document.getElementById('totalProductos').textContent = data.total_productos || 0;
-        document.getElementById('stockBajo').textContent = data.productos_stock_bajo || 0;
-        document.getElementById('ventasHoy').textContent = data.ventas_hoy || 0;
-        document.getElementById('ingresoHoy').textContent = `$${parseFloat(data.ingreso_hoy || 0).toLocaleString('es-CO', { minimumFractionDigits: 2 })}`;
-    } catch (e) { console.error('Error cargando resumen:', e); }
+        setTextSafe('totalProductos', data.total_productos_activos || 0);
+        setTextSafe('stockBajo', data.productos_stock_bajo || 0);
+        setTextSafe('ventasHoy', data.ventas_hoy || 0);
+        setTextSafe('ingresoHoy', `$${parseFloat(data.ingreso_hoy || 0).toLocaleString('es-CO', { minimumFractionDigits: 2 })}`);
+        setTextSafe('adminTotalActivos', data.total_productos_activos || 0);
+        setTextSafe('adminTotalInactivos', data.total_productos_inactivos || 0);
+        setTextSafe('adminActivadosMes', data.activaciones_mes || 0);
+        setTextSafe('adminDesactivadosMes', data.desactivaciones_mes || 0);
+        setTextSafe('adminIngresoMes', `$${parseFloat(data.ingreso_mes || 0).toLocaleString('es-CO', { minimumFractionDigits: 2 })}`);
+        setTextSafe('adminUsuariosBloqueados', data.usuarios_bloqueados || 0);
+    } catch (e) {
+        console.error('Error cargando resumen:', e);
+    }
 }
 
 // ========== REPORTE DEL DÍA ==========
@@ -433,7 +953,7 @@ async function cargarReporteDia() {
     try {
         const hoy = new Date();
         document.getElementById('fechaActual').textContent = hoy.toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        const res = await fetch(`${API}/reporte/dia`);
+        const res = await apiFetch('/reporte/dia');
         if (!res.ok) throw new Error('Error cargando reporte');
         const data = await res.json();
         const datos = data.detalles || [];
@@ -505,7 +1025,7 @@ async function cargarReporteDia() {
 
 // ========== GENERAR FACTURA INDIVIDUAL (CORREGIDA) ==========
 function generarFacturaIndividual(ventaId, facturaNumero) {
-    fetch(`${API}/ventas/${ventaId}`)
+    apiFetch(`/ventas/${ventaId}`)
         .then(res => res.json())
         .then(venta => {
             const negocio = { nombre: "DREXPOS", direccion: "Cra 45 # 67-88, Bogotá D.C.", telefono: "(601) 123-4567", email: "ventas@drexpos.com", nit: "901.123.456-7" };
@@ -619,7 +1139,7 @@ function generarFacturaIndividual(ventaId, facturaNumero) {
 
 // ========== GENERAR REPORTE COMPLETO DEL DÍA ==========
 function generarReporteCompleto() {
-    fetch(`${API}/reporte/dia`)
+    apiFetch('/reporte/dia')
         .then(res => res.json())
         .then(data => {
             if (!data.detalles || data.detalles.length === 0) {
@@ -736,7 +1256,7 @@ function generarReporteCompleto() {
 // ========== VER DETALLE DE VENTA ==========
 async function verDetalleVenta(id) {
     try {
-        const res = await fetch(`${API}/ventas/${id}`);
+        const res = await apiFetch(`/ventas/${id}`);
         const venta = await res.json();
         document.getElementById('detalleVentaId').textContent = venta.venta_id;
         document.getElementById('detalleFacturaNumero').textContent = venta.factura_numero.toString().padStart(3, '0');
@@ -778,9 +1298,14 @@ async function guardarProducto() {
     if (codigo) body.codigo = codigo;
     if (id) { method = 'PUT'; url = `${API}/productos/${id}`; body = { nombre, precio, stock }; if (codigo) body.codigo = codigo; }
     try {
-        const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (res.ok) { alert('✅ Producto guardado'); cerrarModal(); cargarProductos(); cargarInventario(); cargarResumen(); }
-        else { const error = await res.json(); alert(`❌ Error: ${error.error}`); }
+        const res = await apiFetch(url.replace(API, ''), { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (res.ok) {
+            alert('✅ Producto guardado');
+            cerrarModal();
+            cargarProductos();
+            if (document.getElementById('listaInventario')) cargarInventario();
+            cargarResumen();
+        } else { const error = await res.json(); alert(`❌ Error: ${error.error}`); }
     } catch (e) { alert('❌ Error de conexión'); console.error(e); }
 }
 
@@ -805,33 +1330,72 @@ document.getElementById('btnAgregarProducto').onclick = () => {
     document.getElementById('modalProducto').style.display = 'flex';
 };
 
-document.getElementById('btnAgregarProductoInventario').onclick = () => {
-    document.getElementById('modalTitulo').textContent = 'Agregar Producto';
-    document.getElementById('productoId').value = '';
-    document.getElementById('productoCodigo').value = '';
-    document.getElementById('productoNombre').value = '';
-    document.getElementById('productoPrecio').value = '';
-    document.getElementById('productoStock').value = '';
-    document.getElementById('modalProducto').style.display = 'flex';
-};
+const btnAgregarProductoInventario = document.getElementById('btnAgregarProductoInventario');
+if (btnAgregarProductoInventario) {
+    btnAgregarProductoInventario.onclick = () => {
+        document.getElementById('modalTitulo').textContent = 'Agregar Producto';
+        document.getElementById('productoId').value = '';
+        document.getElementById('productoCodigo').value = '';
+        document.getElementById('productoNombre').value = '';
+        document.getElementById('productoPrecio').value = '';
+        document.getElementById('productoStock').value = '';
+        document.getElementById('modalProducto').style.display = 'flex';
+    };
+}
 
 document.getElementById('btnGuardarProducto').onclick = guardarProducto;
+
 document.getElementById('btnFinalizarVenta').onclick = finalizarVenta;
 document.getElementById('btnReporteCompleto').onclick = generarReporteCompleto;
 document.getElementById('btnBuscarHistorial').onclick = buscarHistorial;
 document.getElementById('btnLimpiarHistorial').onclick = limpiarHistorial;
-
-document.querySelector('.close').onclick = cerrarModal;
-document.querySelector('.close-detalle').onclick = cerrarModal;
+document.getElementById('btnLogin').onclick = iniciarSesion;
+document.getElementById('loginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') iniciarSesion(); });
+document.getElementById('togglePassword').addEventListener('click', () => {
+    const passwordInput = document.getElementById('loginPassword');
+    const toggleButton = document.getElementById('togglePassword');
+    const isPwd = passwordInput.type === 'password';
+    passwordInput.type = isPwd ? 'text' : 'password';
+    // toggle CSS class to switch SVG visibility
+    if (isPwd) {
+        toggleButton.classList.add('showing-closed');
+        toggleButton.setAttribute('aria-label', 'Ocultar contraseña');
+    } else {
+        toggleButton.classList.remove('showing-closed');
+        toggleButton.setAttribute('aria-label', 'Mostrar contraseña');
+    }
+    // keep focus in the input so typing continues
+    passwordInput.focus();
+});
+document.getElementById('btnLogout').onclick = () => cerrarSesion();
+const btnCrearCliente = document.getElementById('btnCrearCliente');
+if (btnCrearCliente) btnCrearCliente.onclick = () => abrirModalUsuario('cliente');
+const btnCrearUsuario = document.getElementById('btnCrearUsuario');
+if (btnCrearUsuario) btnCrearUsuario.onclick = abrirModalUsuario;
+const btnGuardarUsuario = document.getElementById('btnGuardarUsuario');
+if (btnGuardarUsuario) btnGuardarUsuario.onclick = guardarUsuario;
+const closeButtons = document.querySelectorAll('.close');
+closeButtons.forEach(button => {
+    if (button.classList.contains('close-usuario')) {
+        button.onclick = cerrarModalUsuario;
+    } else if (button.classList.contains('close-bloqueado')) {
+        button.onclick = cerrarModalBloqueado;
+    } else {
+        button.onclick = cerrarModal;
+    }
+});
+const closeDetalle = document.querySelector('.close-detalle');
+if (closeDetalle) closeDetalle.onclick = cerrarModal;
+const btnCerrarBloqueado = document.getElementById('btnCerrarBloqueado');
+if (btnCerrarBloqueado) btnCerrarBloqueado.onclick = cerrarModalBloqueado;
 
 window.onclick = (e) => {
     if (e.target === document.getElementById('modalProducto')) cerrarModal();
     if (e.target === document.getElementById('modalDetalleVenta')) cerrarModal();
+    if (e.target === document.getElementById('modalUsuario')) cerrarModalUsuario();
+    if (e.target === document.getElementById('modalBloqueado')) cerrarModalBloqueado();
 };
 
 // ========== INICIALIZACIÓN ==========
-cargarCarritoGuardado();
-cargarProductos();
-cargarResumen();
-
-setInterval(cargarResumen, 30000);
+validarSesion();
+setInterval(() => { if (currentUser) cargarResumen(); }, 30000);

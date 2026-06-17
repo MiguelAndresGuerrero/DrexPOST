@@ -2,6 +2,7 @@ const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = 3000;
@@ -19,19 +20,327 @@ const db = mysql.createConnection({
     database: 'SLVI'
 });
 
-db.connect((err) => {
+db.connect(async (err) => {
     if (err) {
         console.error('❌ Error conectando a MySQL:', err.message);
         return;
     }
     console.log('✅ Conectado a MySQL');
+
+    try {
+        await inicializarUsuarios();
+    } catch (e) {
+        console.error('❌ Error inicializando usuarios y control de programa:', e.message);
+    }
+});
+
+function hashPassword(password) {
+    return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function generateToken() {
+    return crypto.randomBytes(32).toString('hex');
+}
+
+function dbQuery(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.query(sql, params, (err, result) => {
+            if (err) return reject(err);
+            resolve(result);
+        });
+    });
+}
+
+async function inicializarUsuarios() {
+    await dbQuery(`CREATE TABLE IF NOT EXISTS usuarios (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        username VARCHAR(100) UNIQUE NOT NULL,
+        password_hash CHAR(64) NOT NULL,
+        rol ENUM('admin','user','cliente') NOT NULL DEFAULT 'user',
+        bloqueado BOOLEAN NOT NULL DEFAULT FALSE,
+        bloqueo_razon TEXT NULL,
+        creado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+    try {
+        await dbQuery("ALTER TABLE usuarios MODIFY COLUMN rol ENUM('admin','user','cliente') NOT NULL DEFAULT 'user'");
+    } catch (e) {
+        // ignore if the column already has the desired enum values or if ALTER fails
+    }
+
+    await dbQuery(`CREATE TABLE IF NOT EXISTS sesiones (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        usuario_id INT NOT NULL,
+        token VARCHAR(128) NOT NULL UNIQUE,
+        creado TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+    )`);
+
+    await dbQuery(`CREATE TABLE IF NOT EXISTS programa_control (
+        id INT PRIMARY KEY DEFAULT 1,
+        habilitado BOOLEAN NOT NULL DEFAULT TRUE
+    )`);
+
+    await dbQuery(`INSERT INTO programa_control (id, habilitado) VALUES (1, TRUE) ON DUPLICATE KEY UPDATE habilitado = habilitado`);
+
+    // Ensure productos table and tracking columns exist for admin metrics
+    await dbQuery(`CREATE TABLE IF NOT EXISTS productos (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        nombre VARCHAR(255) NOT NULL,
+        precio DECIMAL(10,2) NOT NULL DEFAULT 0,
+        stock INT NOT NULL DEFAULT 0,
+        codigo VARCHAR(100) NULL,
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        fecha_activado DATETIME NULL,
+        fecha_desactivado DATETIME NULL,
+        creado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+    try {
+        await dbQuery("ALTER TABLE productos ADD COLUMN IF NOT EXISTS fecha_activado DATETIME NULL");
+        await dbQuery("ALTER TABLE productos ADD COLUMN IF NOT EXISTS fecha_desactivado DATETIME NULL");
+    } catch (e) {
+        // ignore if columns already exist or ALTER not supported
+    }
+
+    // Ensure bloqueo_razon column exists (in case DB updated after initial schema)
+    try {
+        await dbQuery("ALTER TABLE usuarios ADD COLUMN bloqueo_razon TEXT NULL");
+    } catch (e) {
+        // ignore if column already exists or ALTER not supported
+    }
+
+    const usuarios = await dbQuery('SELECT id FROM usuarios LIMIT 1');
+    const usuarioAndres = await dbQuery('SELECT id FROM usuarios WHERE LOWER(username) = LOWER(?)', ['Andres']);
+    const usuarioAdminOriginal = await dbQuery('SELECT id FROM usuarios WHERE LOWER(username) = LOWER(?)', ['admin']);
+
+    if (usuarioAndres.length === 0) {
+        if (usuarios.length === 0) {
+            console.log('⚠️ No se encontraron usuarios. Creando administrador por defecto: Andres/009890');
+            await dbQuery('INSERT INTO usuarios (username, password_hash, rol) VALUES (?, ?, ?)', ['Andres', hashPassword('009890'), 'admin']);
+        } else if (usuarios.length === 1 && usuarioAdminOriginal.length === 1) {
+            console.log('⚠️ Actualizando administrador existente a Andres/009890');
+            await dbQuery('UPDATE usuarios SET username = ?, password_hash = ? WHERE id = ?', ['Andres', hashPassword('009890'), usuarioAdminOriginal[0].id]);
+        }
+    }
+    // Ensure the protected admin 'Andres' is not left blocked on startup
+    try {
+        await dbQuery('UPDATE usuarios SET bloqueado = FALSE WHERE LOWER(username) = LOWER(?)', ['Andres']);
+    } catch (e) {
+        console.error('Error asegurando desbloqueo de Andres:', e.message);
+    }
+}
+
+function autenticar(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'No autorizado' });
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    db.query(`SELECT u.id, u.username, u.rol, u.bloqueado, u.bloqueo_razon, p.habilitado
+              FROM sesiones s
+              JOIN usuarios u ON s.usuario_id = u.id
+              JOIN programa_control p ON p.id = 1
+              WHERE s.token = ?`, [token], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!results || results.length === 0) {
+            return res.status(401).json({ error: 'Sesión no válida' });
+        }
+
+        const user = results[0];
+        if (user.bloqueado) {
+            return res.status(403).json({ error: 'Usuario bloqueado', bloqueo_razon: user.bloqueo_razon || 'Razón no especificada' });
+        }
+
+        if (!user.habilitado && user.rol !== 'admin') {
+            return res.status(403).json({ error: 'Programa bloqueado. Contacte al administrador.' });
+        }
+
+        req.user = user;
+        next();
+    });
+}
+
+function requireAdmin(req, res, next) {
+    if (!req.user || req.user.rol !== 'admin') {
+        return res.status(403).json({ error: 'Acceso de administrador requerido' });
+    }
+    next();
+}
+
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Usuario y contraseña son requeridos' });
+    }
+
+    try {
+        const results = await dbQuery(`SELECT u.id, u.password_hash, u.rol, u.bloqueado, u.bloqueo_razon, p.habilitado
+                           FROM usuarios u
+                           JOIN programa_control p ON p.id = 1
+                           WHERE LOWER(u.username) = LOWER(?)`, [username]);
+
+        if (!results || results.length === 0) {
+            return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+        }
+
+        const user = results[0];
+        if (user.bloqueado) {
+            return res.status(403).json({ error: 'Usuario bloqueado', bloqueo_razon: user.bloqueo_razon || 'Razón no especificada' });
+        }
+
+        if (hashPassword(password) !== user.password_hash) {
+            return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+        }
+
+        if (!user.habilitado && user.rol !== 'admin') {
+            return res.status(403).json({ error: 'Programa bloqueado. Contacte al administrador.' });
+        }
+
+        const token = generateToken();
+        await dbQuery('INSERT INTO sesiones (usuario_id, token) VALUES (?, ?)', [user.id, token]);
+
+        res.json({ token, username, rol: user.rol });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.use('/api', autenticar);
+
+app.post('/api/logout', async (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.split(' ')[1];
+    if (!token) return res.status(400).json({ error: 'Token requerido' });
+
+    try {
+        await dbQuery('DELETE FROM sesiones WHERE token = ?', [token]);
+        res.json({ message: 'Sesión cerrada' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/session', (req, res) => {
+    res.json({ username: req.user.username, rol: req.user.rol });
+});
+
+app.get('/api/program/status', requireAdmin, async (req, res) => {
+    try {
+        const results = await dbQuery('SELECT habilitado FROM programa_control WHERE id = 1');
+        res.json({ habilitado: results[0]?.habilitado ? true : false });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/program/toggle', requireAdmin, async (req, res) => {
+    const { habilitado } = req.body;
+    if (typeof habilitado !== 'boolean') {
+        return res.status(400).json({ error: 'Valor habilitado requerido' });
+    }
+
+    try {
+        await dbQuery('UPDATE programa_control SET habilitado = ? WHERE id = 1', [habilitado]);
+        res.json({ habilitado });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/usuarios', requireAdmin, async (req, res) => {
+    try {
+        const users = await dbQuery('SELECT id, username, rol, bloqueado, bloqueo_razon, creado FROM usuarios ORDER BY creado DESC, id ASC');
+        res.json(users);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/usuarios', requireAdmin, async (req, res) => {
+    const { username, password, rol } = req.body;
+    if (!username || !password || !rol) {
+        return res.status(400).json({ error: 'usuario, contraseña y rol son requeridos' });
+    }
+    if (!['admin', 'user', 'cliente'].includes(rol)) {
+        return res.status(400).json({ error: 'Rol inválido' });
+    }
+    try {
+        const passwordHash = hashPassword(password);
+        const result = await dbQuery('INSERT INTO usuarios (username, password_hash, rol) VALUES (?, ?, ?)', [username, passwordHash, rol]);
+        res.json({ id: result.insertId, username, rol });
+    } catch (e) {
+        if (e.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ error: 'El usuario ya existe' });
+        }
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.put('/api/usuarios/:id/block', requireAdmin, async (req, res) => {
+    try {
+        const target = await dbQuery('SELECT id, username, rol FROM usuarios WHERE id = ?', [req.params.id]);
+        if (!target || target.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+        const userTarget = target[0];
+        // Prevent blocking other admins or the protected user 'Andres'. Allow self-block.
+        if ((userTarget.rol === 'admin' || (userTarget.username && userTarget.username.toLowerCase() === 'andres')) && userTarget.id !== req.user.id) {
+            return res.status(403).json({ error: 'No puede bloquear a otro administrador o al usuario protegido' });
+        }
+        const { razon } = req.body || {};
+        await dbQuery('UPDATE usuarios SET bloqueado = TRUE, bloqueo_razon = ? WHERE id = ?', [razon || null, req.params.id]);
+        // remove any active sessions for that user
+        await dbQuery('DELETE FROM sesiones WHERE usuario_id = ?', [req.params.id]);
+        res.json({ message: 'Usuario bloqueado' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.put('/api/usuarios/:id/unblock', requireAdmin, async (req, res) => {
+    try {
+        const target = await dbQuery('SELECT id, username, rol FROM usuarios WHERE id = ?', [req.params.id]);
+        if (!target || target.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+        const userTarget = target[0];
+        // Prevent others from unblocking an admin or the protected user (only self-unblock allowed)
+        if ((userTarget.rol === 'admin' || (userTarget.username && userTarget.username.toLowerCase() === 'andres')) && userTarget.id !== req.user.id) {
+            return res.status(403).json({ error: 'No puede modificar el estado de otro administrador o del usuario protegido' });
+        }
+        await dbQuery('UPDATE usuarios SET bloqueado = FALSE, bloqueo_razon = NULL WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Usuario desbloqueado' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// List active sessions (exclude the requesting admin's own sessions)
+app.get('/api/sesiones', requireAdmin, async (req, res) => {
+    try {
+        const sessions = await dbQuery(`SELECT s.id as session_id, u.id as usuario_id, u.username, u.bloqueado, u.bloqueo_razon, s.creado
+                                        FROM sesiones s
+                                        JOIN usuarios u ON s.usuario_id = u.id
+                                        WHERE u.id <> ?
+                                        ORDER BY s.creado DESC`, [req.user.id]);
+        res.json(sessions);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Force logout (delete a specific session)
+app.delete('/api/sesiones/:id', requireAdmin, async (req, res) => {
+    try {
+        await dbQuery('DELETE FROM sesiones WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Sesión eliminada' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ========== PRODUCTOS ==========
 
 // Obtener productos ACTIVOS (para ventas)
 app.get('/api/productos', (req, res) => {
-    db.query('SELECT id, codigo, nombre, precio, stock FROM productos WHERE activo = 1 ORDER BY nombre ASC', (err, results) => {
+    db.query('SELECT id, codigo, nombre, precio, stock, activo FROM productos WHERE activo = 1 ORDER BY nombre ASC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
@@ -52,7 +361,7 @@ app.post('/api/productos', (req, res) => {
         return res.status(400).json({ error: 'Nombre y precio son requeridos' });
     }
 
-    db.query('INSERT INTO productos (nombre, precio, stock, codigo, activo) VALUES (?, ?, ?, ?, 1)',
+    db.query('INSERT INTO productos (nombre, precio, stock, codigo, activo, fecha_activado) VALUES (?, ?, ?, ?, 1, NOW())',
         [nombre, precio, stock || 0, codigo || null],
         (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
@@ -76,7 +385,8 @@ app.put('/api/productos/:id', (req, res) => {
 // Activar/Desactivar producto
 app.put('/api/productos/:id/toggle', (req, res) => {
     const { activo } = req.body;
-    db.query('UPDATE productos SET activo = ? WHERE id = ?', [activo ? 1 : 0, req.params.id], (err, result) => {
+    const query = `UPDATE productos SET activo = ?, fecha_activado = ${activo ? 'NOW()' : 'fecha_activado'}, fecha_desactivado = ${activo ? 'fecha_desactivado' : 'NOW()'} WHERE id = ?`;
+    db.query(query, [activo ? 1 : 0, req.params.id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Producto no encontrado' });
         res.json({ message: `Producto ${activo ? 'activado' : 'desactivado'}` });
@@ -306,15 +616,15 @@ app.get('/api/fechas-con-ventas', (req, res) => {
 app.get('/api/dashboard/resumen', (req, res) => {
     db.query(`
         SELECT 
-            (SELECT COUNT(*) FROM productos WHERE activo = 1) AS total_productos,
+            (SELECT COUNT(*) FROM productos WHERE activo = 1) AS total_productos_activos,
+            (SELECT COUNT(*) FROM productos WHERE activo = 0) AS total_productos_inactivos,
+            (SELECT COUNT(*) FROM productos WHERE activo = 1 AND MONTH(fecha_activado) = MONTH(CURDATE()) AND YEAR(fecha_activado) = YEAR(CURDATE())) AS activaciones_mes,
+            (SELECT COUNT(*) FROM productos WHERE activo = 0 AND MONTH(fecha_desactivado) = MONTH(CURDATE()) AND YEAR(fecha_desactivado) = YEAR(CURDATE())) AS desactivaciones_mes,
             (SELECT COUNT(*) FROM productos WHERE stock < 5 AND activo = 1) AS productos_stock_bajo,
             (SELECT COUNT(*) FROM ventas WHERE DATE(fecha) = CURDATE()) AS ventas_hoy,
             (SELECT COALESCE(SUM(total), 0) FROM ventas WHERE DATE(fecha) = CURDATE()) AS ingreso_hoy,
-            (SELECT COALESCE(SUM(total), 0) FROM ventas WHERE MONTH(fecha) = MONTH(CURDATE())) AS ingreso_mes,
-            (SELECT COALESCE(SUM(dv.cantidad), 0) 
-                FROM detalle_ventas dv 
-                JOIN ventas v ON dv.venta_id = v.id 
-                WHERE DATE(v.fecha) = CURDATE()) AS productos_vendidos_hoy
+            (SELECT COALESCE(SUM(total), 0) FROM ventas WHERE MONTH(fecha) = MONTH(CURDATE()) AND YEAR(fecha) = YEAR(CURDATE())) AS ingreso_mes,
+            (SELECT COUNT(*) FROM usuarios WHERE bloqueado = 1) AS usuarios_bloqueados
     `, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results[0]);

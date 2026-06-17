@@ -6,12 +6,54 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DrexPOS - Sistema de Ventas e Inventario</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
 </head>
 
 <body>
+    <div id="loginOverlay" class="login-overlay">
+        <div class="login-card">
+            <div class="login-logo">🛡️</div>
+            <h2>Acceso a DrexPOS</h2>
+            <p class="login-sub">Ingrese su usuario y contraseña para continuar.</p>
+            <div class="login-fields">
+                <input id="loginUsuario" class="login-input" type="text" placeholder="Usuario" autocomplete="username">
+                <div class="password-field">
+                    <input id="loginPassword" class="login-input" type="password" placeholder="Contraseña"
+                        autocomplete="current-password">
+                    <button id="togglePassword" type="button" class="btn-toggle" aria-label="Mostrar contraseña">
+                        <svg class="eye eye-open" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                            viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-linecap="round"
+                            stroke-linejoin="round">
+                            <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                        <svg class="eye eye-closed" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                            viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-linecap="round"
+                            stroke-linejoin="round" style="display:none">
+                            <path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.67 21.67 0 0 1 5.06-4.94">
+                            </path>
+                            <path d="M1 1l22 22"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="login-actions">
+                <button id="btnLogin" class="btn-primary">Ingresar</button>
+            </div>
+            <p id="loginError" class="login-error"></p>
+        </div>
+    </div>
+
     <div class="container">
         <header>
-            <h1>🛒 DrexPOS</h1>
+            <div class="header-top">
+                <h1>🛒 DrexPOS</h1>
+                <div id="userBar" class="user-bar hidden">
+                    <span id="usernameLabel"></span>
+                    <button id="btnCrearCliente" class="btn-primary btn-sm">Registrar cliente</button>
+                    <button id="btnLogout" class="btn-ghost">Cerrar sesión</button>
+                </div>
+            </div>
             <div class="resumen">
                 <div class="card-resumen">
                     <span>📦 Productos</span>
@@ -36,14 +78,15 @@
             <button class="tab-btn active" onclick="mostrarTab('ventas')">🛒 Vender</button>
             <button class="tab-btn" onclick="mostrarTab('reporte')">📊 Reporte del Día</button>
             <button class="tab-btn" onclick="mostrarTab('historial')">📅 Historial</button>
-            <button class="tab-btn" onclick="mostrarTab('inventario')">📦 Administrar Productos</button>
+            <button id="btnTabAdmin" class="tab-btn hidden" onclick="mostrarTab('admin')">🔧 Admin</button>
         </div>
 
         <!-- Panel Vender -->
         <div id="tabVentas" class="tab-content active">
             <div class="paneles">
-                <div class="panel">
-                    <h2>📋 Productos</h2>
+                <!-- Admin Only: Productos -->
+                <div id="panelProductosAdmin" class="panel hidden">
+                    <h2>� Productos</h2>
                     <div class="buscar">
                         <input type="text" id="buscarProducto" placeholder="🔍 Buscar por nombre o código..."
                             autocomplete="off">
@@ -57,11 +100,59 @@
                                     <th>Nombre</th>
                                     <th>Precio</th>
                                     <th>Stock</th>
+                                    <th>Activo</th>
                                     <th></th>
                                 </tr>
                             </thead>
                             <tbody id="listaProductos"></tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- Admin Only: Usuario Filter & Details -->
+                <div id="panelFiltroUsuarioAdmin" class="panel hidden">
+                    <h2>👤 Filtrado por Usuario</h2>
+                    <div class="buscar" style="margin-bottom: 15px;">
+                        <label for="filtroUsuarioVenta" style="margin:0; font-weight:600; width:150px;">Seleccionar
+                            usuario:</label>
+                        <select id="filtroUsuarioVenta"
+                            style="flex:1; padding:10px; border-radius:8px; border:1px solid #d1d5db;"></select>
+                    </div>
+                    <div id="panelDetallesUsuario" class="table-container"
+                        style="display:none; background:#f8f9fa; padding:20px; border-radius:8px; margin-bottom:15px;">
+                        <h3 id="usuarioDatosNombre" style="margin-top:0; color:#1f2937;"></h3>
+                        <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:15px;">
+                            <div
+                                style="background:white; padding:12px; border-radius:6px; border-left:4px solid #3b82f6;">
+                                <div style="font-size:0.85rem; color:#6b7280; font-weight:600;">ROL</div>
+                                <div id="usuarioDatosRol" style="font-size:1.1rem; color:#1f2937; margin-top:4px;">
+                                </div>
+                            </div>
+                            <div
+                                style="background:white; padding:12px; border-radius:6px; border-left:4px solid #10b981;">
+                                <div style="font-size:0.85rem; color:#6b7280; font-weight:600;">ESTADO</div>
+                                <div id="usuarioDatosEstado" style="font-size:1.1rem; color:#1f2937; margin-top:4px;">
+                                </div>
+                            </div>
+                            <div
+                                style="background:white; padding:12px; border-radius:6px; border-left:4px solid #f59e0b;">
+                                <div style="font-size:0.85rem; color:#6b7280; font-weight:600;">ESTADO DE PAGO</div>
+                                <div id="usuarioDatosPago"
+                                    style="font-size:1.1rem; color:#1f2937; margin-top:4px; font-weight:700;"></div>
+                            </div>
+                            <div
+                                style="background:white; padding:12px; border-radius:6px; border-left:4px solid #8b5cf6;">
+                                <div style="font-size:0.85rem; color:#6b7280; font-weight:600;">FECHA CREACIÓN</div>
+                                <div id="usuarioDatosCreado" style="font-size:1.1rem; color:#1f2937; margin-top:4px;">
+                                </div>
+                            </div>
+                        </div>
+                        <div id="usuarioDatosRazonBloqueo"
+                            style="background:white; padding:12px; border-radius:6px; margin-top:15px; border-left:4px solid #ef4444; display:none;">
+                            <div style="font-size:0.85rem; color:#6b7280; font-weight:600;">RAZÓN DE BLOQUEO</div>
+                            <div style="font-size:1rem; color:#dc2626; margin-top:4px; font-weight:600;"
+                                id="textoRazonBloqueo"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -182,80 +273,123 @@
             </div>
         </div>
 
-        <!-- Panel Inventario -->
-        <div id="tabInventario" class="tab-content">
-            <div class="panel-full">
-                <h2>📦 Administrar Productos</h2>
-                <div class="buscar">
-                    <input type="text" id="buscarInventario" placeholder="🔍 Buscar por nombre o código..."
-                        autocomplete="off">
-                    <button id="btnAgregarProductoInventario" class="btn-primary">+ Nuevo Producto</button>
+        <div id="tabAdmin" class="tab-content">
+            <div id="adminPanel" class="admin-panel hidden">
+                <div class="admin-panel-top">
+                    <h3>🔐 Panel de administración</h3>
+                    <div class="admin-actions">
+                        <button id="btnCrearUsuario" class="btn-primary btn-sm">+ Nuevo usuario</button>
+                        <button id="btnTogglePrograma" class="btn-success btn-sm">Bloquear programa</button>
+                    </div>
+                </div>
+                <div class="admin-metrics">
+                    <div class="card-resumen"><span>✅ Activos</span><strong id="adminTotalActivos">0</strong></div>
+                    <div class="card-resumen"><span>❌ Inactivos</span><strong id="adminTotalInactivos">0</strong></div>
+                    <div class="card-resumen"><span>🚀 Activados este mes</span><strong
+                            id="adminActivadosMes">0</strong>
+                    </div>
+                    <div class="card-resumen"><span>🔻 Desactivados este mes</span><strong
+                            id="adminDesactivadosMes">0</strong></div>
+                    <div class="card-resumen"><span>💰 Ingreso mes</span><strong id="adminIngresoMes">$0</strong></div>
+                    <div class="card-resumen"><span>👥 Usuarios bloqueados</span><strong
+                            id="adminUsuariosBloqueados">0</strong></div>
                 </div>
                 <div class="tabla-container">
-                    <table id="tablaInventario">
+                    <h4 style="margin-bottom:8px">Sesiones activas</h4>
+                    <table id="tablaSesiones">
                         <thead>
                             <tr>
-                                <th>Código</th>
-                                <th>Nombre</th>
-                                <th>Precio</th>
-                                <th>Stock</th>
+                                <th>Usuario</th>
+                                <th>Conectado</th>
                                 <th>Estado</th>
                                 <th>Acciones</th>
                             </tr>
                         </thead>
-                        <tbody id="listaInventario"></tbody>
+                        <tbody id="listaSesiones"></tbody>
                     </table>
                 </div>
-                <div class="info-inventario">
-                    <small>💡 Consejos:</small><br>
-                    <small>• Haz clic en el stock para modificarlo directamente</small><br>
-                    <small>• Los productos "Inactivos" no aparecen en ventas</small><br>
-                    <small>• Puedes reactivar un producto en cualquier momento</small>
-                </div>
-            </div>
-        </div>
-
-        <!-- Modal para producto -->
-        <div id="modalProducto" class="modal">
-            <div class="modal-content">
-                <span class="close">&times;</span>
-                <h3 id="modalTitulo">Agregar Producto</h3>
-                <input type="hidden" id="productoId">
-                <input type="text" id="productoCodigo" placeholder="Código de barras (opcional)">
-                <input type="text" id="productoNombre" placeholder="Nombre del producto">
-                <input type="number" id="productoPrecio" placeholder="Precio" step="0.01">
-                <input type="number" id="productoStock" placeholder="Stock inicial">
-                <button id="btnGuardarProducto" class="btn-primary">Guardar</button>
-            </div>
-        </div>
-
-        <!-- Modal para detalle de venta -->
-        <div id="modalDetalleVenta" class="modal">
-            <div class="modal-content modal-detalle">
-                <span class="close-detalle">&times;</span>
-                <h3>📄 Detalle de Venta #<span id="detalleVentaId"></span></h3>
-                <p><strong>Factura N°:</strong> <span id="detalleFacturaNumero"></span></p>
-                <p><strong>Fecha:</strong> <span id="detalleFecha"></span></p>
-                <p><strong>Total:</strong> $<span id="detalleTotal"></span></p>
-                <h4>Productos:</h4>
                 <div class="tabla-container">
-                    <table>
+                    <table id="tablaUsuarios">
                         <thead>
                             <tr>
-                                <th>Producto</th>
-                                <th>Código</th>
-                                <th>Cantidad</th>
-                                <th>Subtotal</th>
+                                <th>Usuario</th>
+                                <th>Rol</th>
+                                <th>Estado</th>
+                                <th>Acciones</th>
                             </tr>
                         </thead>
-                        <tbody id="detalleItems"></tbody>
+                        <tbody></tbody>
                     </table>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <script src="script.js"></script>
+            <!-- Modal para usuario -->
+            <div id="modalUsuario" class="modal modal-small hidden">
+                <div class="modal-content">
+                    <span class="close close-usuario">&times;</span>
+                    <h3 id="modalUsuarioTitulo">Registrar cliente</h3>
+                    <input type="text" id="usuarioNuevoNombre" placeholder="Usuario">
+                    <input type="password" id="usuarioNuevoPassword" placeholder="Contraseña">
+                    <select id="usuarioNuevoRol">
+                        <option value="cliente">Cliente</option>
+                        <option value="admin">Administrador</option>
+                    </select>
+                    <button id="btnGuardarUsuario" class="btn-primary">Guardar usuario</button>
+                </div>
+            </div>
+
+            <div id="modalBloqueado" class="modal">
+                <div class="modal-content">
+                    <span class="close close-bloqueado">&times;</span>
+                    <h3>Acceso bloqueado</h3>
+                    <p id="mensajeBloqueo" style="margin-bottom:16px; line-height:1.5;"></p>
+                    <p style="margin-bottom:8px;">Contacta al administrador por WhatsApp o llamada:</p>
+                    <p style="font-weight:700; font-size:1.1rem;">3221456789</p>
+                    <button id="btnCerrarBloqueado" class="btn-primary"
+                        style="margin-top:18px; width:100%;">Cerrar</button>
+                </div>
+            </div>
+
+            <div id="modalProducto" class="modal">
+                <div class="modal-content">
+                    <span class="close">&times;</span>
+                    <h3 id="modalTitulo">Agregar Producto</h3>
+                    <input type="hidden" id="productoId">
+                    <input type="text" id="productoCodigo" placeholder="Código de barras (opcional)">
+                    <input type="text" id="productoNombre" placeholder="Nombre del producto">
+                    <input type="number" id="productoPrecio" placeholder="Precio" step="0.01">
+                    <input type="number" id="productoStock" placeholder="Stock inicial">
+                    <button id="btnGuardarProducto" class="btn-primary">Guardar</button>
+                </div>
+            </div>
+
+            <!-- Modal para detalle de venta -->
+            <div id="modalDetalleVenta" class="modal">
+                <div class="modal-content modal-detalle">
+                    <span class="close-detalle">&times;</span>
+                    <h3>📄 Detalle de Venta #<span id="detalleVentaId"></span></h3>
+                    <p><strong>Factura N°:</strong> <span id="detalleFacturaNumero"></span></p>
+                    <p><strong>Fecha:</strong> <span id="detalleFecha"></span></p>
+                    <p><strong>Total:</strong> $<span id="detalleTotal"></span></p>
+                    <h4>Productos:</h4>
+                    <div class="tabla-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Producto</th>
+                                    <th>Código</th>
+                                    <th>Cantidad</th>
+                                    <th>Subtotal</th>
+                                </tr>
+                            </thead>
+                            <tbody id="detalleItems"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script src="script.js"></script>
 </body>
 
 </html>
